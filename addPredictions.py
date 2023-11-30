@@ -21,7 +21,7 @@ def print_annotation(annotation, text):
     display_name = annotation['displayName']
     start_offset = int(annotation['startOffset'])
     end_offset = int(annotation['endOffset'])
-    extracted_text = re.sub(re.compile("[\n\r]"), "", text[start_offset:end_offset].decode())
+    extracted_text = re.sub(re.compile("[\n\r]"), "", text[start_offset:end_offset])
     print(f"  {display_name} [{start_offset}:{end_offset}]: {extracted_text}")
 
 output = ""
@@ -37,16 +37,18 @@ for line in jsonl_lines:
 
     # open and read text file
     file_path = path.join(datasets_dir, file_info["textGcsUri"].replace(GS_ROOT, ""))
+    with open(file_path, "rt") as f:
+        text = f.read().replace('\n', '\n\n') # fix for Vertex AI double-newline bug
     print(file_path)
-    with open(file_path, "rb") as f:
-        text = f.read()
     print(f"length: {len(text)}")
+    first_100 = text[:100].replace('\n',' ')
+    print(f"first 100 chars: {first_100}")
 
     # clean up and print existing annotations
     for annotation in file_info["textSegmentAnnotations"]:
         if "annotationResourceLabels" in annotation:
             del annotation["annotationResourceLabels"]
-        print(annotation, text)
+        print_annotation(annotation, text)
 
     # TODO: Get predicted annotations for this file
     pred_annotations = []       
@@ -55,10 +57,10 @@ for line in jsonl_lines:
     for pred_annotation in pred_annotations:
         overlaps = False
         for annotation in file_info["textSegmentAnnotations"]:
-            if (pred_annotation["startOffset"] >= annotation["startOffset"] and
-                pred_annotation["startOffset"] <= annotation["endOffset"]) or
-               (pred_annotation["endOffset"] >= annotation["startOffset"] and
-                pred_annotation["endOffset"] <= annotation["endOffset"]):
+            if ((pred_annotation["startOffset"] >= annotation["startOffset"] and
+                 pred_annotation["startOffset"] <= annotation["endOffset"]) or
+                (pred_annotation["endOffset"] >= annotation["startOffset"] and
+                 pred_annotation["endOffset"] <= annotation["endOffset"])):
                 overlaps = True
                 break
         # add non-overlapping predictions to file info
