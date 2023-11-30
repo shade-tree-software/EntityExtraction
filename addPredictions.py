@@ -104,7 +104,7 @@ for line in jsonl_lines:
             del annotation["annotationResourceLabels"]
         print_annotation(annotation, text)
 
-    # TODO: Get predicted annotations for this file
+    # Get predicted annotations for this file
     pred_annotations = get_predictions(text)      
 
     # Go through predicted annotations looking for overlaps with existing annotations
