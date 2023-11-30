@@ -24,15 +24,15 @@ import json
 from os.path import splitext, join
 
 num_args = len(sys.argv)
-if num_args < 2 or num_args > 4 or ("-a" in sys.argv and "-n" in sys.argv):
+if num_args < 2 or num_args > 5 or ("-a" in sys.argv and "-n" in sys.argv):
   print("\nUsage:")
   print(f"  {sys.argv[0]} input_filename [options...]\n")
   print("Options:")
   print("  -j output as jsonl file")
+  print("  -h create a copy of the input file with the filename added as the")
+  print("     first line of the content")
   print("  -a adjust offsets to account for Google Cloud 'double newlines' bug")
-  print("  -n create a copy of the input file with newlines replaced by spaces,")
-  print("     and use this copy instead of the original (name of new file will")
-  print("     be input filename appended with '_modified')\n")
+  print("  -n create a copy of the input file with newlines replaced by spaces")
   print("   Note: -a and -n cannot be used together\n")
   exit(0)
 
@@ -40,8 +40,9 @@ input_filename = sys.argv[1]
 output_as_jsonl = "-j" in sys.argv
 adjust_offsets = "-a" in sys.argv
 remove_newlines = "-n" in sys.argv
+add_header = "-h" in sys.argv
 
-MAX_LEN = 9998
+MAX_LEN = 9900
 GCS_URI_PATH = "gs://irad_gcp_entity_extraction/"
 
 def get_prediction_dict(predictions, chars_read, index, content):
@@ -58,15 +59,18 @@ def get_prediction_dict(predictions, chars_read, index, content):
 
   # Google "Double Newlines" Bug
   # 
-  # For some files Google seems to convert each newline character into two newlines
-  # before making the prediction.  This results in incorrect offsets.  To counteract
-  # this we can count the number of newlines in the original file prior to the offset
-  # and add this count to the offset to get the correct asjusted offset.  We only do
-  # this if the user has selected option -a.
+  # When importing files for cloud-based training, Google often seems to convert each
+  # newline character into two newlines before adding the files to the training dataset.
+  # This increases the length of the file and it means that any offsets that you specify
+  # in your jsonl files will be wrong.  To counteract this when generating jsonl files
+  # we can count the number of newlines in the training file prior to each offset and
+  # add this count to the offset to get the correct asjusted offset.  We only do this
+  # if the user has selected option -a.
   # 
   # The other way to get around this problem is to specify option -n in which case we
   # will create a new input file with all of the newlines replaced with spaces.
   # This seems to be the better of the two options.
+  #
   start_offset = int(predictions['textSegmentStartOffsets'][index]) + chars_read
   offset_adjustment = content[0:start_offset].count('\n') if adjust_offsets else 0
   start_offset += offset_adjustment
@@ -77,10 +81,6 @@ def get_prediction_dict(predictions, chars_read, index, content):
   prediction_dict["startOffset"] = start_offset
   prediction_dict["endOffset"] = end_offset 
   return prediction_dict
-
-def get_predictions_array(predictions, chars_read, content):
-  l = lambda index: get_prediction_dict(predictions, chars_read, index, content) 
-  return list(map(l, range(len(predictions['ids']))))
 
 def predict_text_entity_extraction_sample(
   project: str,
@@ -104,29 +104,38 @@ def predict_text_entity_extraction_sample(
   endpoint = client.endpoint_path( project=project, location=location, endpoint=endpoint_id)
   response = client.predict( endpoint=endpoint, instances=instances, parameters=parameters)
   files_predictions = response.predictions
+  predictions = files_predictions[0] #  assume only one file
+  l = lambda index: get_prediction_dict(predictions, chars_read, index, content) 
+  return list(map(l, range(len(predictions['ids']))))
 
   # See gs://google-cloud-aiplatform/schema/predict/prediction/text_extraction_1.0.0.yaml for the format of the predictions.
-  jsonl_lines = []
-  for predictions in files_predictions:
-    jsonl_lines.append({
-      "textSegmentAnnotations": get_predictions_array(predictions, chars_read, content),
-      "textGcsUri": join(GCS_URI_PATH, input_filename)
-    })
-  if output_as_jsonl:
-    with open(f"{splitext(input_filename)[0]}.jsonl", "w") as output_file:
-      for line in jsonl_lines:
-        output_file.write(str(line))
-        output_file.write("\n")
-  else:
-    for line in jsonl_lines:
-      for annotation in line["textSegmentAnnotations"]:
-        print(f'{annotation["displayName"]} ({annotation["confidence"]}) [{annotation["startOffset"]}:{annotation["endOffset"]}]: {annotation["value"]}')
+  #   jsonl_lines = []
+  #   for predictions in files_predictions:
+  #     jsonl_lines.append({
+  #       "textSegmentAnnotations": get_predictions_array(predictions, chars_read, content),
+  #       "textGcsUri": join(GCS_URI_PATH, input_filename)
+  #     })
+  #   print(jsonl_lines)
+  #   if output_as_jsonl:
+  #     with open(f"{splitext(input_filename)[0]}.jsonl", "w") as output_file:
+  #       for line in jsonl_lines:
+  #         output_file.write(str(line))
+  #         output_file.write("\n")
+  #   else:
+  #     for line in jsonl_lines:
+  #       for annotation in line["textSegmentAnnotations"]:
+  #         print(f'{annotation["displayName"]} ({annotation["confidence"]}) [{annotation["startOffset"]}:{annotation["endOffset"]}]: {annotation["value"]}')
 
 with open(input_filename, "r") as f:
   content = f.read()
 
+if add_header:
+  content = f"{input_filename}\n{content}"
+
 if remove_newlines:
   content = content.replace("\n", " ")
+
+if remove_newlines or add_header:
   filename_parts = splitext(input_filename)
   input_filename = f"{filename_parts[0]}_modified{filename_parts[1]}"
   with open(input_filename, "w") as f:
@@ -134,19 +143,34 @@ if remove_newlines:
 
 file_length = len(content)
 print(f"File is {file_length} characters")
+
+all_annotations = []
 chars_read = 0
 try:
   while chars_read < file_length:
     stop_index = min(chars_read + MAX_LEN, file_length)
     print(f"checking charcaters {chars_read} to {stop_index - 1}")
-    predict_text_entity_extraction_sample(
+    annotations = predict_text_entity_extraction_sample(
       "1071272000574",
       "3328355837696540672",
       "us-central1",
       content,
       chars_read,
       stop_index)
+    if output_as_jsonl:
+      all_annotations += annotations
+      print(f"found {len(annotations)} annotations")
+    else:
+      for annotation in annotations:
+        print(f'{annotation["displayName"]} ({annotation["confidence"]}) [{annotation["startOffset"]}:{annotation["endOffset"]}]: {annotation["value"]}')
     chars_read += MAX_LEN
+  if output_as_jsonl:
+    with open(f"{splitext(input_filename)[0]}.jsonl", "w") as output_file:
+      jsonl_line = {
+        "textSegmentAnnotations": all_annotations,
+        "textGcsUri": join(GCS_URI_PATH, input_filename)
+      }
+      output_file.write(str(jsonl_line))
 except api_core.exceptions.InvalidArgument as e:
   print(e)
 
